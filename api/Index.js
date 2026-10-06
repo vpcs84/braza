@@ -4,10 +4,18 @@ const axios = require("axios");
 
 const app = express();
 
-// Configuração de CORS para permitir requisições do Stremio em qualquer plataforma
+// Configuração de CORS para o Stremio
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "*");
+    next();
+});
+
+// Normaliza o req.url removendo o prefixo /api enviado pelo Vercel
+app.use((req, res, next) => {
+    if (req.url.startsWith("/api")) {
+        req.url = req.url.replace(/^\/api/, "") || "/";
+    }
     next();
 });
 
@@ -216,7 +224,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
 const addonInterface = builder.getInterface();
 const addonRouter = getRouter(addonInterface);
 
-// Redireciona acessos à raiz para o manifesto
+// Redireciona a raiz para o manifesto
 app.get("/", (req, res) => {
     res.redirect("/manifest.json");
 });
