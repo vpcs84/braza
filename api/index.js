@@ -1,126 +1,123 @@
-const express = require("express");
-const { addonBuilder, getRouter, serveHTTP } = require("stremio-addon-sdk");
+const express = require('express');
+const { addonBuilder, getRouter } = require('stremio-addon-sdk');
+const axios = require('axios');
 
-// 1. Configuração do Manifesto do Addon
-const manifest = {
-  id: "org.iracemaflix.external.tv",
-  version: "1.3.0",
-  name: "IracemaFlix TV",
-  description: "Canais da IracemaFlix com reprodução em navegador externo.",
-  resources: ["catalog", "meta", "stream"],
-  types: ["movie", "tv"],
-  idPrefixes: ["iracema_"],
-  catalogs: [
-    {
-      type: "movie",
-      id: "iracema_catalog_movie",
-      name: "IracemaFlix Ao Vivo"
-    },
-    {
-      type: "tv",
-      id: "iracema_catalog_tv",
-      name: "IracemaFlix (Canais)"
+const API_CHANNELS_URL = 'https://reidosembeds.online/api/channels';
+
+// Cache simples em memória (5 minutos)
+let channelsCache = [];
+let lastFetchTimestamp = 0;
+const CACHE_DURATION = 5 * 60 * 1000;
+
+async function fetchChannels() {
+    const now = Date.now();
+    if (channelsCache.length > 0 && (now - lastFetchTimestamp) < CACHE_DURATION) {
+        return channelsCache;
     }
-  ],
-  logo: "https://s2.glbimg.com/O4Q8iJ2R-8q9K9V0/globonews.jpg"
+
+    try {
+        const response = await axios.get(API_CHANNELS_URL, { timeout: 10000 });
+        const data = Array.isArray(response.data)
+            ? response.data
+            : (response.data.channels || response.data.data || []);
+
+        channelsCache = data;
+        lastFetchTimestamp = now;
+        return channelsCache;
+    } catch (error) {
+        console.error('Erro ao buscar canais:', error.message);
+        return channelsCache;
+    }
+}
+
+const manifest = {
+    id: 'org.reidosembeds.tv',
+    version: '1.0.0',
+    name: 'Rei dos Embeds - TV Ao Vivo',
+    description: 'Canais de TV ao vivo integrados do Rei dos Embeds',
+    types: ['tv'],
+    catalogs: [
+        {
+            type: 'tv',
+            id: 'reidosembeds_tv_catalog',
+            name: 'Rei dos Embeds TV'
+        }
+    ],
+    resources: ['catalog', 'meta', 'stream']
 };
 
 const builder = new addonBuilder(manifest);
 
-// 2. Base de Dados dos Canais
-const CHANNELS = [
-  {
-    id: "iracema_globonews",
-    name: "GloboNews",
-    poster: "https://s2.glbimg.com/O4Q8iJ2R-8q9K9V0/globonews.jpg",
-    genres: ["Notícias", "Ao Vivo"],
-    description: "Canal GloboNews ao vivo transmitido via IracemaFlix.",
-    externalUrl: "https://iracemaflix.eu.cc/tv?id=globonews&type=channel"
-  }
-];
-
-// Função auxiliar para gerar metadados válidos
-function getMeta(channel, type) {
-  const meta = {
-    id: channel.id,
-    type: type,
-    name: channel.name,
-    poster: channel.poster,
-    genres: channel.genres,
-    description: channel.description
-  };
-
-  // Se o tipo for 'tv', incluímos um 'episódio' para o Stremio habilitar a busca de streams
-  if (type === "tv") {
-    meta.videos = [
-      {
-        id: channel.id,
-        title: "Transmissão Ao Vivo",
-        released: new Date().toISOString()
-      }
-    ];
-  }
-
-  return meta;
-}
-
-// 3. Handler do Catálogo
-builder.defineCatalogHandler(({ type, id }) => {
-  if (id.startsWith("iracema_catalog")) {
-    const metas = CHANNELS.map((channel) => getMeta(channel, type));
-    return Promise.resolve({ metas });
-  }
-  return Promise.resolve({ metas: [] });
+// 1. Catálogo de Canais
+builder.defineCatalogHandler(async ({ type, id }) => {
+    if (type === 'tv' && id === 'reidosembeds_tv_catalog') {
+        const channels = await fetchChannels();
+        const metas = channels.map(item => ({
+            id: `rde_channel_${item.id || item.slug || item.name}`,
+            type: 'tv',
+            name: item.name || item.title || 'Canal',
+            poster: item.logo || item.image || item.poster || '',
+            posterShape: 'square',
+            description: item.category ? `Categoria: ${item.category}` : 'Canal ao vivo'
+        }));
+        return { metas };
+    }
+    return { metas: [] };
 });
 
-// 4. Handler de Metadados (Necessário para exibir a tela do canal e botões)
-builder.defineMetaHandler(({ type, id }) => {
-  const channel = CHANNELS.find((item) => item.id === id || id.startsWith(item.id));
-  if (channel) {
-    return Promise.resolve({ meta: getMeta(channel, type) });
-  }
-  return Promise.resolve({ meta: null });
-});
+// 2. Metadados do Canal
+builder.defineMetaHandler(async ({ type, id }) => {
+    if (type === 'tv' && id.startsWith('rde_channel_')) {
+        const channels = await fetchChannels();
+        const channelId = id.replace('rde_channel_', '');
+        const channel = channels.find(c => String(c.id || c.slug || c.name) === channelId);
 
-// 5. Handler de Stream (Gera o botão do link externo)
-builder.defineStreamHandler(({ type, id }) => {
-  const channel = CHANNELS.find((item) => item.id === id || id.startsWith(item.id));
-
-  if (channel) {
-    return Promise.resolve({
-      streams: [
-        {
-          title: "🌐 Abrir no Navegador (IracemaFlix)",
-          externalUrl: channel.externalUrl
+        if (channel) {
+            return {
+                meta: {
+                    id: id,
+                    type: 'tv',
+                    name: channel.name || channel.title,
+                    poster: channel.logo || channel.image || channel.poster || '',
+                    posterShape: 'square',
+                    description: channel.category ? `Categoria: ${channel.category}` : 'Transmissão ao vivo'
+                }
+            };
         }
-      ]
-    });
-  }
-
-  return Promise.resolve({ streams: [] });
+    }
+    return { meta: null };
 });
 
-// 6. Integração Express + Serverless da Vercel
-const addonInterface = builder.getInterface();
+// 3. Link da Stream
+builder.defineStreamHandler(async ({ type, id }) => {
+    if (type === 'tv' && id.startsWith('rde_channel_')) {
+        const channels = await fetchChannels();
+        const channelId = id.replace('rde_channel_', '');
+        const channel = channels.find(c => String(c.id || c.slug || c.name) === channelId);
+
+        if (channel) {
+            const streamUrl = channel.url || channel.stream_url || channel.embed;
+            if (streamUrl) {
+                const isDirectMedia = streamUrl.includes('.m3u8') || streamUrl.includes('.mp4');
+                return {
+                    streams: [
+                        {
+                            title: channel.name ? `Assistir ${channel.name}` : 'Assistir ao Vivo',
+                            [isDirectMedia ? 'url' : 'externalUrl']: streamUrl
+                        }
+                    ]
+                };
+            }
+        }
+    }
+    return { streams: [] };
+});
+
+// Inicialização Express para Serverless
 const app = express();
+const addonInterface = builder.getInterface();
+const sdkRouter = getRouter(addonInterface);
 
-// Middlewares para CORS
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-  next();
-});
+app.use('/', sdkRouter);
 
-const router = getRouter(addonInterface);
-app.use("/", router);
-
-if (process.env.VERCEL || process.env.NODE_ENV === "production") {
-  module.exports = app;
-} else {
-  serveHTTP(addonInterface, { port: 7000 });
-  console.log("Addon rodando localmente em http://127.0.0.1:7000/manifest.json");
-}
+module.exports = app;
