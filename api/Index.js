@@ -18,7 +18,7 @@ const manifest = {
     id: "org.iracemaflix.scraper.addon",
     version: "1.0.0",
     name: "IracemaFlix Canais",
-    description: "Addon de TV ao vivo com raspagem direta do IracemaFlix.",
+    description: "Addon de TV ao vivo com raspagem direta dos canais do IracemaFlix.",
     resources: ["catalog", "stream"],
     types: ["tv"],
     catalogs: [
@@ -34,7 +34,6 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// Função para buscar o catálogo de canais
 async function fetchChannels() {
     try {
         const response = await axios.get(CANAIS_URL, {
@@ -45,6 +44,7 @@ async function fetchChannels() {
         const html = response.data;
         const channels = [];
 
+        // 1. Resposta em formato JSON/API
         if (typeof html === "object") {
             const list = Array.isArray(html) ? html : (html.channels || html.canais || html.items || []);
             list.forEach((item, index) => {
@@ -65,6 +65,7 @@ async function fetchChannels() {
             return channels;
         }
 
+        // 2. Scraping via Expressões Regulares no HTML
         const linkRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
         let match;
         let channelCount = 0;
@@ -98,6 +99,7 @@ async function fetchChannels() {
             }
         }
 
+        // 3. Fallback: Busca por links HLS (.m3u8) diretos
         if (channels.length === 0) {
             const m3u8Regex = /(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/gi;
             let m3u8Match;
@@ -120,7 +122,6 @@ async function fetchChannels() {
     }
 }
 
-// Handlers do Stremio
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
     if (type === "tv" && id === "iracemaflix_tv") {
         let channels = await fetchChannels();
@@ -208,11 +209,9 @@ builder.defineStreamHandler(async ({ type, id }) => {
     return { streams: [] };
 });
 
-// Conecta o SDK do Stremio ao Express Router
 const addonInterface = builder.getInterface();
 const addonRouter = getRouter(addonInterface);
 
 app.use("/", addonRouter);
 
-// Exporta o aplicativo Express para o Vercel Serverless
 module.exports = app;
