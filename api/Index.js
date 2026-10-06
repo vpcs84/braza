@@ -212,6 +212,11 @@ builder.defineStreamHandler(async ({ type, id }) => {
 const addonInterface = builder.getInterface();
 const addonRouter = getRouter(addonInterface);
 
+// Redireciona a raiz (/) para o manifesto para evitar erro 404 ao abrir no navegador
+app.get("/", (req, res) => {
+    res.redirect("/manifest.json");
+});
+
 app.use("/", addonRouter);
 
 module.exports = app;
