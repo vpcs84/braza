@@ -4,6 +4,13 @@ const axios = require("axios");
 
 const app = express();
 
+// Configuração de CORS para permitir requisições do Stremio em qualquer plataforma
+app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Headers", "*");
+    next();
+});
+
 const DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webkit,*/*;q=0.8",
@@ -44,7 +51,6 @@ async function fetchChannels() {
         const html = response.data;
         const channels = [];
 
-        // 1. Resposta em formato JSON/API
         if (typeof html === "object") {
             const list = Array.isArray(html) ? html : (html.channels || html.canais || html.items || []);
             list.forEach((item, index) => {
@@ -65,7 +71,6 @@ async function fetchChannels() {
             return channels;
         }
 
-        // 2. Scraping via Expressões Regulares no HTML
         const linkRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
         let match;
         let channelCount = 0;
@@ -99,7 +104,6 @@ async function fetchChannels() {
             }
         }
 
-        // 3. Fallback: Busca por links HLS (.m3u8) diretos
         if (channels.length === 0) {
             const m3u8Regex = /(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/gi;
             let m3u8Match;
@@ -212,7 +216,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
 const addonInterface = builder.getInterface();
 const addonRouter = getRouter(addonInterface);
 
-// Redireciona a raiz (/) para o manifesto para evitar erro 404 ao abrir no navegador
+// Redireciona acessos à raiz para o manifesto
 app.get("/", (req, res) => {
     res.redirect("/manifest.json");
 });
