@@ -2,8 +2,7 @@ const express = require('express');
 const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 const axios = require('axios');
 
-const API_BASE = 'https://reidosembeds.online/api';
-const CHANNELS_ENDPOINT = 'https://reidosembeds.online/api/channels';
+const API_CHANNELS_URL = 'https://reidosembeds.online/api/channels';
 
 const client = axios.create({
     timeout: 10000,
@@ -14,13 +13,13 @@ const client = axios.create({
     }
 });
 
-// Sanitizador robusto para tratar "HTTPS :/\/", "HTTPS:/\/\", espaços extras e barras invertidas
+// Sanitizador de URLs (corrige "HTTPS :/\/", barras invertidas e espaços extras)
 function sanitizeUrl(rawUrl) {
     if (!rawUrl || typeof rawUrl !== 'string') return null;
 
     let clean = rawUrl.trim();
 
-    // Se a API devolver um <iframe>, extrai o src
+    // Extrai o src caso venha numa tag <iframe>
     const iframeMatch = clean.match(/src=["']([^"']+)["']/i);
     if (iframeMatch && iframeMatch[1]) {
         clean = iframeMatch[1].trim();
@@ -31,20 +30,21 @@ function sanitizeUrl(rawUrl) {
         return match.toLowerCase().startsWith('https') ? 'https://' : 'http://';
     });
 
-    // Converte qualquer barra invertida restante no caminho para barra normal
+    // Converte barras invertidas no caminho para barras normais
     clean = clean.replace(/\\/g, '/');
 
-    // Remove espaços em branco que possam ter entrado na URL
+    // Remove espaços em branco
     clean = clean.replace(/\s+/g, '');
 
     return clean;
 }
 
+// Extrai e limpa a URL do stream com foco no campo `embed_url`
 function parseStreamUrl(data) {
     if (!data) return null;
     
     if (typeof data === 'object') {
-        const candidate = data.url || data.stream_url || data.embed || data.link || data.player || data.iframe || data.m3u8 || data.hls;
+        const candidate = data.embed_url || data.url || data.stream_url || data.embed || data.link || data.player || data.iframe || data.m3u8 || data.hls;
         if (candidate) return parseStreamUrl(candidate);
     }
 
@@ -57,21 +57,21 @@ function parseStreamUrl(data) {
 
 async function getChannels() {
     try {
-        const response = await client.get(CHANNELS_ENDPOINT);
+        const response = await client.get(API_CHANNELS_URL);
         const data = response.data;
         return Array.isArray(data) ? data : (data.channels || data.data || data.results || []);
     } catch (error) {
-        console.error('Erro ao buscar canais:', error.message);
+        console.error('Erro ao procurar canais:', error.message);
         return [];
     }
 }
 
 const manifest = {
     id: 'org.reidosembeds.tv',
-    version: '1.5.0',
-    name: 'Rei dos Embeds - TV & Filmes',
-    description: 'Addon de TV ao Vivo, Filmes e Séries integrado com a API Rei dos Embeds',
-    types: ['tv', 'movie', 'series'],
+    version: '1.6.0',
+    name: 'Rei dos Embeds - TV',
+    description: 'Canais de TV ao vivo integrados do Rei dos Embeds',
+    types: ['tv'],
     catalogs: [
         {
             type: 'tv',
@@ -80,22 +80,24 @@ const manifest = {
         }
     ],
     resources: ['catalog', 'meta', 'stream'],
-    idPrefixes: ['rde_', 'tt']
+    idPrefixes: ['rde_']
 };
 
 const builder = new addonBuilder(manifest);
 
-// 1. Catálogo
+// 1. Catálogo de Canais
 builder.defineCatalogHandler(async ({ type, id }) => {
     if (type === 'tv' && id === 'reidosembeds_tv_catalog') {
         const channels = await getChannels();
         const metas = channels.map((item, index) => {
             const channelId = String(item.id || item.slug || item.code || index);
+            const posterUrl = sanitizeUrl(item.logo_url || item.logo || item.preview_url || item.image || item.poster);
+            
             return {
                 id: `rde_${channelId}`,
                 type: 'tv',
                 name: item.name || item.title || item.nome || `Canal ${index + 1}`,
-                poster: sanitizeUrl(item.logo || item.image || item.poster || item.icon) || '',
+                poster: posterUrl || '',
                 posterShape: 'square',
                 description: item.category ? `Categoria: ${item.category}` : 'Canal ao vivo'
             };
@@ -105,7 +107,7 @@ builder.defineCatalogHandler(async ({ type, id }) => {
     return { metas: [] };
 });
 
-// 2. Metadados
+// 2. Metadados do Canal
 builder.defineMetaHandler(async ({ type, id }) => {
     if (type === 'tv' && id.startsWith('rde_')) {
         const channels = await getChannels();
@@ -113,12 +115,13 @@ builder.defineMetaHandler(async ({ type, id }) => {
         const channel = channels.find((c, index) => String(c.id || c.slug || c.code || index) === cleanId);
 
         if (channel) {
+            const posterUrl = sanitizeUrl(channel.logo_url || channel.logo || channel.preview_url || channel.image || channel.poster);
             return {
                 meta: {
                     id: id,
                     type: 'tv',
                     name: channel.name || channel.title || channel.nome || 'Canal',
-                    poster: sanitizeUrl(channel.logo || channel.image || channel.poster || channel.icon) || '',
+                    poster: posterUrl || '',
                     posterShape: 'square'
                 }
             };
@@ -127,88 +130,59 @@ builder.defineMetaHandler(async ({ type, id }) => {
     return { meta: null };
 });
 
-// 3. Streams
+// 3. Resolução de Streams
 builder.defineStreamHandler(async ({ type, id }) => {
-    const streams = [];
-
-    // --- TV AO VIVO ---
     if (type === 'tv' && id.startsWith('rde_')) {
         const channels = await getChannels();
         const cleanId = id.replace('rde_', '');
         const channel = channels.find((c, index) => String(c.id || c.slug || c.code || index) === cleanId);
 
         if (channel) {
-            let streamUrl = parseStreamUrl(channel);
-
-            if (!streamUrl && (channel.id || channel.slug)) {
-                try {
-                    const subRes = await client.get(`${API_BASE}/channel/${channel.id || channel.slug}`);
-                    streamUrl = parseStreamUrl(subRes.data);
-                } catch (e) {
-                    console.error('Erro na sub-rota do canal:', e.message);
-                }
-            }
+            const streamUrl = parseStreamUrl(channel);
 
             if (streamUrl) {
+                const streams = [];
+
+                // Se for link direto (.m3u8 / .mp4)
                 if (streamUrl.includes('.m3u8') || streamUrl.includes('.mp4')) {
-                    streams.push({ title: 'Assistir ao Vivo (Direct Stream)', url: streamUrl });
+                    streams.push({
+                        title: `Assistir ${channel.name || 'Ao Vivo'} (Direct Stream)`,
+                        url: streamUrl
+                    });
                 }
-                streams.push({ title: 'Abrir no Player Web', externalUrl: streamUrl });
+
+                // Link Embed para abrir no leitor web
+                streams.push({
+                    title: `Abrir no Player Web (${channel.name || 'Ao Vivo'})`,
+                    externalUrl: streamUrl
+                });
+
+                return { streams };
             }
         }
     }
-
-    // --- FILMES ---
-    else if (type === 'movie' && id.startsWith('tt')) {
-        try {
-            const res = await client.get(`${API_BASE}/movie/${id}`);
-            const streamUrl = parseStreamUrl(res.data);
-            if (streamUrl) {
-                streams.push({ title: 'Assistir Filme (Rei dos Embeds)', externalUrl: streamUrl });
-            }
-        } catch (e) {
-            console.error(`Erro ao buscar filme ${id}:`, e.message);
-        }
-    }
-
-    // --- SÉRIES ---
-    else if (type === 'series' && id.startsWith('tt')) {
-        const [imdbId, season, episode] = id.split(':');
-        try {
-            const res = await client.get(`${API_BASE}/series/${imdbId}/${season}/${episode}`);
-            const streamUrl = parseStreamUrl(res.data);
-            if (streamUrl) {
-                streams.push({ title: `Assistir T${season}E${episode}`, externalUrl: streamUrl });
-            }
-        } catch (e) {
-            console.error(`Erro ao buscar série ${id}:`, e.message);
-        }
-    }
-
-    return { streams };
+    return { streams: [] };
 });
 
 const app = express();
 
-// Rota para testar a correção no navegador
+// Rota de teste para ver o sanitizador a funcionar
 app.get('/test', async (req, res) => {
     try {
-        const response = await client.get(CHANNELS_ENDPOINT);
-        const rawData = response.data;
-        const channels = Array.isArray(rawData) ? rawData : (rawData.channels || rawData.data || []);
+        const response = await client.get(API_CHANNELS_URL);
+        const channels = Array.isArray(response.data) ? response.data : (response.data.channels || []);
 
-        const sampleFixed = channels.slice(0, 3).map(ch => {
-            const original = ch.url || ch.embed || ch.link;
-            return {
-                original: original,
-                sanitized: parseStreamUrl(ch)
-            };
-        });
+        const sample = channels.slice(0, 3).map(ch => ({
+            original_logo: ch.logo_url,
+            sanitized_logo: sanitizeUrl(ch.logo_url),
+            original_embed: ch.embed_url,
+            sanitized_embed: parseStreamUrl(ch)
+        }));
 
         res.json({
             success: true,
             total_channels: channels.length,
-            sample_tests: sampleFixed
+            sample
         });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
