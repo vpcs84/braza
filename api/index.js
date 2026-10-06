@@ -3,10 +3,9 @@ const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 const axios = require('axios');
 
 const API_BASE = 'https://v2.rdembed.sbs/api';
+const CHANNELS_ENDPOINT = 'https://v2.rdembed.sbs/api/channels/';
 
-// Configuração do cliente HTTP com cabeçalhos para evitar bloqueios
 const client = axios.create({
-    baseURL: API_BASE,
     timeout: 10000,
     headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -15,17 +14,14 @@ const client = axios.create({
     }
 });
 
-// Extrai o URL limpo caso a API devolva uma tag HTML <iframe>
 function parseStreamUrl(data) {
     if (!data) return null;
     
-    // Se a resposta for um objeto JSON
     if (typeof data === 'object') {
         const candidate = data.url || data.stream_url || data.embed || data.link || data.player || data.iframe || data.m3u8 || data.hls;
         if (candidate) return parseStreamUrl(candidate);
     }
 
-    // Se for uma string
     if (typeof data === 'string') {
         const iframeMatch = data.match(/src=["']([^"']+)["']/i);
         if (iframeMatch && iframeMatch[1]) {
@@ -37,10 +33,9 @@ function parseStreamUrl(data) {
     return null;
 }
 
-// Procura a lista de canais de TV
 async function getChannels() {
     try {
-        const response = await client.get('/channels');
+        const response = await client.get(CHANNELS_ENDPOINT);
         const data = response.data;
         return Array.isArray(data) ? data : (data.channels || data.data || data.results || []);
     } catch (error) {
@@ -49,10 +44,9 @@ async function getChannels() {
     }
 }
 
-// Configuração do Manifest do Stremio
 const manifest = {
     id: 'org.rdembed.addon',
-    version: '1.1.0',
+    version: '1.2.0',
     name: 'RD Embed - TV & Filmes',
     description: 'Addon de TV ao Vivo, Filmes e Séries integrado com a API RD Embed',
     types: ['tv', 'movie', 'series'],
@@ -69,7 +63,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// 1. Catálogo (Exibe a lista de canais de TV)
+// 1. Catálogo de Canais
 builder.defineCatalogHandler(async ({ type, id }) => {
     if (type === 'tv' && id === 'rdembed_tv_catalog') {
         const channels = await getChannels();
@@ -89,7 +83,7 @@ builder.defineCatalogHandler(async ({ type, id }) => {
     return { metas: [] };
 });
 
-// 2. Metadados dos Canais
+// 2. Metadados do Canal
 builder.defineMetaHandler(async ({ type, id }) => {
     if (type === 'tv' && id.startsWith('rde_')) {
         const channels = await getChannels();
@@ -115,7 +109,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
 builder.defineStreamHandler(async ({ type, id }) => {
     const streams = [];
 
-    // --- STREAM PARA TV AO VIVO ---
+    // --- TV AO VIVO ---
     if (type === 'tv' && id.startsWith('rde_')) {
         const channels = await getChannels();
         const cleanId = id.replace('rde_', '');
@@ -124,10 +118,9 @@ builder.defineStreamHandler(async ({ type, id }) => {
         if (channel) {
             let streamUrl = parseStreamUrl(channel);
 
-            // Tenta rota secundária se a lista geral não trouxer o link direto
             if (!streamUrl && (channel.id || channel.slug)) {
                 try {
-                    const subRes = await client.get(`/channel/${channel.id || channel.slug}`);
+                    const subRes = await client.get(`${API_BASE}/channel/${channel.id || channel.slug}`);
                     streamUrl = parseStreamUrl(subRes.data);
                 } catch (e) {
                     console.error('Erro na sub-rota do canal:', e.message);
@@ -143,10 +136,10 @@ builder.defineStreamHandler(async ({ type, id }) => {
         }
     }
 
-    // --- STREAM PARA FILMES (IMDb ID ex: tt0111161) ---
+    // --- FILMES (IMDb ID) ---
     else if (type === 'movie' && id.startsWith('tt')) {
         try {
-            const res = await client.get(`/movie/${id}`);
+            const res = await client.get(`${API_BASE}/movie/${id}`);
             const streamUrl = parseStreamUrl(res.data);
             if (streamUrl) {
                 streams.push({ title: 'Assistir Filme (RD Embed)', externalUrl: streamUrl });
@@ -156,11 +149,11 @@ builder.defineStreamHandler(async ({ type, id }) => {
         }
     }
 
-    // --- STREAM PARA SÉRIES (IMDb ID ex: tt0944947:1:1) ---
+    // --- SÉRIES (IMDb ID:temporada:episodio) ---
     else if (type === 'series' && id.startsWith('tt')) {
         const [imdbId, season, episode] = id.split(':');
         try {
-            const res = await client.get(`/series/${imdbId}/${season}/${episode}`);
+            const res = await client.get(`${API_BASE}/series/${imdbId}/${season}/${episode}`);
             const streamUrl = parseStreamUrl(res.data);
             if (streamUrl) {
                 streams.push({ title: `Assistir T${season}E${episode}`, externalUrl: streamUrl });
@@ -175,13 +168,21 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
 const app = express();
 
-// Rotas de Teste para abrir diretamente no navegador
+// Rota de teste no navegador
 app.get('/test', async (req, res) => {
     try {
-        const response = await client.get('/channels');
-        res.json({ success: true, count: Array.isArray(response.data) ? response.data.length : 'N/A', data: response.data });
+        const response = await client.get(CHANNELS_ENDPOINT);
+        res.json({
+            success: true,
+            count: Array.isArray(response.data) ? response.data.length : 'N/A',
+            data: response.data
+        });
     } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
+        res.status(500).json({
+            success: false,
+            error: err.message,
+            status: err.response ? err.response.status : null
+        });
     }
 });
 
