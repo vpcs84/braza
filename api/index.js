@@ -14,6 +14,32 @@ const client = axios.create({
     }
 });
 
+// Sanitizador robusto para tratar "HTTPS :/\/", "HTTPS:/\/\", espaços extras e barras invertidas
+function sanitizeUrl(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return null;
+
+    let clean = rawUrl.trim();
+
+    // Se a API devolver um <iframe>, extrai o src
+    const iframeMatch = clean.match(/src=["']([^"']+)["']/i);
+    if (iframeMatch && iframeMatch[1]) {
+        clean = iframeMatch[1].trim();
+    }
+
+    // Corrige prefixos como "HTTPS :/\/", "HTTPS ://", "http :\/\", etc.
+    clean = clean.replace(/^https?\s*:\s*[\\\/]+/i, (match) => {
+        return match.toLowerCase().startsWith('https') ? 'https://' : 'http://';
+    });
+
+    // Converte qualquer barra invertida restante no caminho para barra normal
+    clean = clean.replace(/\\/g, '/');
+
+    // Remove espaços em branco que possam ter entrado na URL
+    clean = clean.replace(/\s+/g, '');
+
+    return clean;
+}
+
 function parseStreamUrl(data) {
     if (!data) return null;
     
@@ -23,11 +49,7 @@ function parseStreamUrl(data) {
     }
 
     if (typeof data === 'string') {
-        const iframeMatch = data.match(/src=["']([^"']+)["']/i);
-        if (iframeMatch && iframeMatch[1]) {
-            return iframeMatch[1];
-        }
-        return data.trim();
+        return sanitizeUrl(data);
     }
 
     return null;
@@ -39,14 +61,14 @@ async function getChannels() {
         const data = response.data;
         return Array.isArray(data) ? data : (data.channels || data.data || data.results || []);
     } catch (error) {
-        console.error('Erro ao procurar canais:', error.message);
+        console.error('Erro ao buscar canais:', error.message);
         return [];
     }
 }
 
 const manifest = {
     id: 'org.reidosembeds.tv',
-    version: '1.3.0',
+    version: '1.5.0',
     name: 'Rei dos Embeds - TV & Filmes',
     description: 'Addon de TV ao Vivo, Filmes e Séries integrado com a API Rei dos Embeds',
     types: ['tv', 'movie', 'series'],
@@ -63,7 +85,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// 1. Catálogo de Canais
+// 1. Catálogo
 builder.defineCatalogHandler(async ({ type, id }) => {
     if (type === 'tv' && id === 'reidosembeds_tv_catalog') {
         const channels = await getChannels();
@@ -73,7 +95,7 @@ builder.defineCatalogHandler(async ({ type, id }) => {
                 id: `rde_${channelId}`,
                 type: 'tv',
                 name: item.name || item.title || item.nome || `Canal ${index + 1}`,
-                poster: item.logo || item.image || item.poster || item.icon || '',
+                poster: sanitizeUrl(item.logo || item.image || item.poster || item.icon) || '',
                 posterShape: 'square',
                 description: item.category ? `Categoria: ${item.category}` : 'Canal ao vivo'
             };
@@ -83,7 +105,7 @@ builder.defineCatalogHandler(async ({ type, id }) => {
     return { metas: [] };
 });
 
-// 2. Metadados do Canal
+// 2. Metadados
 builder.defineMetaHandler(async ({ type, id }) => {
     if (type === 'tv' && id.startsWith('rde_')) {
         const channels = await getChannels();
@@ -96,7 +118,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
                     id: id,
                     type: 'tv',
                     name: channel.name || channel.title || channel.nome || 'Canal',
-                    poster: channel.logo || channel.image || channel.poster || channel.icon || '',
+                    poster: sanitizeUrl(channel.logo || channel.image || channel.poster || channel.icon) || '',
                     posterShape: 'square'
                 }
             };
@@ -105,7 +127,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
     return { meta: null };
 });
 
-// 3. Resolução de Streams (Canais, Filmes e Séries)
+// 3. Streams
 builder.defineStreamHandler(async ({ type, id }) => {
     const streams = [];
 
@@ -136,7 +158,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
         }
     }
 
-    // --- FILMES (IMDb ID) ---
+    // --- FILMES ---
     else if (type === 'movie' && id.startsWith('tt')) {
         try {
             const res = await client.get(`${API_BASE}/movie/${id}`);
@@ -145,11 +167,11 @@ builder.defineStreamHandler(async ({ type, id }) => {
                 streams.push({ title: 'Assistir Filme (Rei dos Embeds)', externalUrl: streamUrl });
             }
         } catch (e) {
-            console.error(`Erro ao procurar filme ${id}:`, e.message);
+            console.error(`Erro ao buscar filme ${id}:`, e.message);
         }
     }
 
-    // --- SÉRIES (IMDb ID) ---
+    // --- SÉRIES ---
     else if (type === 'series' && id.startsWith('tt')) {
         const [imdbId, season, episode] = id.split(':');
         try {
@@ -159,7 +181,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
                 streams.push({ title: `Assistir T${season}E${episode}`, externalUrl: streamUrl });
             }
         } catch (e) {
-            console.error(`Erro ao procurar série ${id}:`, e.message);
+            console.error(`Erro ao buscar série ${id}:`, e.message);
         }
     }
 
@@ -168,21 +190,28 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
 const app = express();
 
-// Rota de teste
+// Rota para testar a correção no navegador
 app.get('/test', async (req, res) => {
     try {
         const response = await client.get(CHANNELS_ENDPOINT);
+        const rawData = response.data;
+        const channels = Array.isArray(rawData) ? rawData : (rawData.channels || rawData.data || []);
+
+        const sampleFixed = channels.slice(0, 3).map(ch => {
+            const original = ch.url || ch.embed || ch.link;
+            return {
+                original: original,
+                sanitized: parseStreamUrl(ch)
+            };
+        });
+
         res.json({
             success: true,
-            count: Array.isArray(response.data) ? response.data.length : 'N/A',
-            data: response.data
+            total_channels: channels.length,
+            sample_tests: sampleFixed
         });
     } catch (err) {
-        res.status(500).json({
-            success: false,
-            error: err.message,
-            status: err.response ? err.response.status : null
-        });
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
