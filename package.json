@@ -1,11 +1,12 @@
 {
   "name": "stremio-iracemaflix-addon",
   "version": "1.0.0",
-  "description": "Addon do Stremio para Vercel via Web Scraping",
+  "description": "Addon Stremio para canais IracemaFlix",
   "main": "api/index.js",
   "dependencies": {
-    "axios": "^1.6.8",
-    "express": "^4.19.2",
     "stremio-addon-sdk": "^1.6.0"
+  },
+  "scripts": {
+    "start": "node api/index.js"
   }
 }
