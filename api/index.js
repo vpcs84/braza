@@ -4,14 +4,14 @@ const axios = require("axios");
 
 const app = express();
 
-// Configuração de CORS
+// 1. Configuração de CORS
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "*");
     next();
 });
 
-// Normaliza a URL tratando variações de maiúsculas/minúsculas no caminho /api/Index
+// 2. Normaliza URLs vindas do roteador interno da Vercel
 app.use((req, res, next) => {
     req.url = req.url.replace(/^\/api(\/index(\.js)?)?/i, "");
     if (!req.url || req.url === "" || req.url.toLowerCase() === "/index") {
@@ -225,7 +225,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
 const addonInterface = builder.getInterface();
 const addonRouter = getRouter(addonInterface);
 
-// Redireciona acessos à raiz para o manifesto
+// 3. Redireciona a raiz para o manifesto
 app.get("/", (req, res) => {
     res.redirect("/manifest.json");
 });
