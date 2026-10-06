@@ -4,17 +4,17 @@ const axios = require("axios");
 
 const app = express();
 
-// Configuração de CORS para requisições do Stremio
+// Configuração de CORS
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "*");
     next();
 });
 
-// Normaliza a URL removendo prefixos de roteamento interno do Vercel
+// Normaliza a URL tratando variações de maiúsculas/minúsculas no caminho /api/Index
 app.use((req, res, next) => {
-    req.url = req.url.replace(/^\/api(\/index(\.js)?)?/, "");
-    if (!req.url || req.url === "") {
+    req.url = req.url.replace(/^\/api(\/index(\.js)?)?/i, "");
+    if (!req.url || req.url === "" || req.url.toLowerCase() === "/index") {
         req.url = "/";
     }
     next();
@@ -225,7 +225,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
 const addonInterface = builder.getInterface();
 const addonRouter = getRouter(addonInterface);
 
-// Redireciona requisições da raiz para o manifesto
+// Redireciona acessos à raiz para o manifesto
 app.get("/", (req, res) => {
     res.redirect("/manifest.json");
 });
