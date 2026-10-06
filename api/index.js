@@ -2,15 +2,15 @@ const express = require('express');
 const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 const axios = require('axios');
 
-const API_BASE = 'https://v2.rdembed.sbs/api';
-const CHANNELS_ENDPOINT = 'https://v2.rdembed.sbs/api/channels/';
+const API_BASE = 'https://reidosembeds.online/api';
+const CHANNELS_ENDPOINT = 'https://reidosembeds.online/api/channels';
 
 const client = axios.create({
     timeout: 10000,
     headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
-        'Referer': 'https://v2.rdembed.sbs/'
+        'Referer': 'https://reidosembeds.online/'
     }
 });
 
@@ -45,16 +45,16 @@ async function getChannels() {
 }
 
 const manifest = {
-    id: 'org.rdembed.addon',
-    version: '1.2.0',
-    name: 'RD Embed - TV & Filmes',
-    description: 'Addon de TV ao Vivo, Filmes e Séries integrado com a API RD Embed',
+    id: 'org.reidosembeds.tv',
+    version: '1.3.0',
+    name: 'Rei dos Embeds - TV & Filmes',
+    description: 'Addon de TV ao Vivo, Filmes e Séries integrado com a API Rei dos Embeds',
     types: ['tv', 'movie', 'series'],
     catalogs: [
         {
             type: 'tv',
-            id: 'rdembed_tv_catalog',
-            name: 'RD Embed TV'
+            id: 'reidosembeds_tv_catalog',
+            name: 'Rei dos Embeds TV'
         }
     ],
     resources: ['catalog', 'meta', 'stream'],
@@ -65,7 +65,7 @@ const builder = new addonBuilder(manifest);
 
 // 1. Catálogo de Canais
 builder.defineCatalogHandler(async ({ type, id }) => {
-    if (type === 'tv' && id === 'rdembed_tv_catalog') {
+    if (type === 'tv' && id === 'reidosembeds_tv_catalog') {
         const channels = await getChannels();
         const metas = channels.map((item, index) => {
             const channelId = String(item.id || item.slug || item.code || index);
@@ -142,14 +142,14 @@ builder.defineStreamHandler(async ({ type, id }) => {
             const res = await client.get(`${API_BASE}/movie/${id}`);
             const streamUrl = parseStreamUrl(res.data);
             if (streamUrl) {
-                streams.push({ title: 'Assistir Filme (RD Embed)', externalUrl: streamUrl });
+                streams.push({ title: 'Assistir Filme (Rei dos Embeds)', externalUrl: streamUrl });
             }
         } catch (e) {
             console.error(`Erro ao procurar filme ${id}:`, e.message);
         }
     }
 
-    // --- SÉRIES (IMDb ID:temporada:episodio) ---
+    // --- SÉRIES (IMDb ID) ---
     else if (type === 'series' && id.startsWith('tt')) {
         const [imdbId, season, episode] = id.split(':');
         try {
@@ -168,7 +168,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
 const app = express();
 
-// Rota de teste no navegador
+// Rota de teste
 app.get('/test', async (req, res) => {
     try {
         const response = await client.get(CHANNELS_ENDPOINT);
