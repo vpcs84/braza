@@ -11,7 +11,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// Normaliza a URL tratando prefixos do Vercel
+// Normaliza URLs vindas do Vercel
 app.use((req, res, next) => {
     req.url = req.url.replace(/^\/api(\/index(\.js)?)?/i, "");
     if (!req.url || req.url === "" || req.url.toLowerCase() === "/index") {
@@ -34,7 +34,7 @@ const manifest = {
     id: "org.iracemaflix.scraper.addon",
     version: "1.0.0",
     name: "IracemaFlix Canais",
-    description: "Addon de TV ao vivo com suporte a canais e streams HTTP.",
+    description: "Addon de TV ao vivo com links para abertura no navegador.",
     resources: ["catalog", "stream"],
     types: ["tv"],
     catalogs: [
@@ -60,26 +60,28 @@ async function fetchChannels() {
         const html = response.data;
         const channels = [];
 
+        // 1. Resposta JSON
         if (typeof html === "object") {
             const list = Array.isArray(html) ? html : (html.channels || html.canais || html.items || []);
             list.forEach((item, index) => {
                 const title = item.name || item.title || item.nome || `Canal ${index + 1}`;
-                const streamUrl = item.url || item.stream || item.link;
+                const targetUrl = item.url || item.link || item.stream;
                 const logo = item.logo || item.icon || item.poster || "https://via.placeholder.com/300x450?text=IracemaFlix+TV";
                 
-                if (streamUrl || item.id) {
+                if (targetUrl) {
                     channels.push({
-                        id: `iracema:${encodeURIComponent(streamUrl || item.id)}`,
+                        id: `iracema:${encodeURIComponent(targetUrl)}`,
                         name: title,
                         type: "tv",
                         poster: logo,
-                        description: `Assista ${title} ao vivo via IracemaFlix.`
+                        description: `Abrir ${title} no navegador.`
                     });
                 }
             });
             return channels;
         }
 
+        // 2. Scraping HTML
         const linkRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
         let match;
         let channelCount = 0;
@@ -108,7 +110,7 @@ async function fetchChannels() {
                     name: title,
                     type: "tv",
                     poster: logo || "https://via.placeholder.com/300x450?text=IracemaFlix+TV",
-                    description: `Transmissão ao vivo do canal ${title}`
+                    description: `Link para abrir no navegador: ${title}`
                 });
             }
         }
@@ -138,112 +140,15 @@ builder.defineStreamHandler(async ({ type, id }) => {
     if (type === "tv" && id.startsWith("iracema:")) {
         const rawTarget = decodeURIComponent(id.replace("iracema:", ""));
 
-        // 1. Se o destino já for um arquivo/stream direto em HTTP (.ts, .m3u8, .mp4 ou porta/live)
-        if (/\.(m3u8|ts|mp4|mkv)(\?.*)?$/i.test(rawTarget)) {
-            return {
-                streams: [{
-                    url: rawTarget,
-                    title: "Sinal HTTP Direto",
-                    behaviorHints: {
-                        requestHeaders: {
-                            "User-Agent": DEFAULT_HEADERS["User-Agent"],
-                            "Referer": BASE_URL
-                        }
-                    }
-                }]
-            };
-        }
-
-        try {
-            // 2. Tenta raspar o player da página para capturar links de stream HTTP
-            const response = await axios.get(rawTarget, {
-                headers: DEFAULT_HEADERS,
-                timeout: 8000,
-                maxRedirects: 5
-            });
-
-            const pageHtml = typeof response.data === "string" ? response.data : JSON.stringify(response.data);
-            let streamUrl = null;
-
-            // Busca arquivos de mídia no HTML
-            const mediaRegex = /(https?:\/\/[^\s"'<>]+\.(?:m3u8|ts|mp4|mkv)[^\s"'<>]*)/i;
-            // Busca variáveis em scripts de players (file: "http...", source: "http...", src: "http...")
-            const playerJsRegex = /(?:file|source|src|stream|link)\s*[:=]\s*["'](https?:\/\/[^"']+)["']/i;
-            // Busca tags <video> ou <source>
-            const videoTagRegex = /<(?:source|video)[^>]*src=["']([^"']+)["']/i;
-            // Busca iframes de players externos
-            const iframeRegex = /<iframe\s+[^>]*src=["']([^"']+)["']/i;
-
-            let match = mediaRegex.exec(pageHtml) || playerJsRegex.exec(pageHtml) || videoTagRegex.exec(pageHtml);
-
-            if (match) {
-                streamUrl = match[1];
-            } else {
-                const iframeMatch = iframeRegex.exec(pageHtml);
-                if (iframeMatch) {
-                    let iframeUrl = iframeMatch[1];
-                    if (!iframeUrl.startsWith("http")) {
-                        iframeUrl = new URL(iframeUrl, BASE_URL).href;
-                    }
-
-                    const iframeRes = await axios.get(iframeUrl, {
-                        headers: { ...DEFAULT_HEADERS, Referer: rawTarget },
-                        timeout: 8000
-                    });
-                    const iframeHtml = typeof iframeRes.data === "string" ? iframeRes.data : JSON.stringify(iframeRes.data);
-                    
-                    const subMatch = mediaRegex.exec(iframeHtml) || playerJsRegex.exec(iframeHtml) || videoTagRegex.exec(iframeHtml);
-                    if (subMatch) {
-                        streamUrl = subMatch[1];
-                    }
+        // Retorna externalUrl para acionar a abertura no navegador padrão do dispositivo
+        return {
+            streams: [
+                {
+                    externalUrl: rawTarget,
+                    title: "🌐 Abrir no Navegador"
                 }
-            }
-
-            if (streamUrl) {
-                return {
-                    streams: [{
-                        url: streamUrl,
-                        title: "IracemaFlix - Stream HTTP",
-                        behaviorHints: {
-                            requestHeaders: {
-                                "User-Agent": DEFAULT_HEADERS["User-Agent"],
-                                "Referer": rawTarget
-                            }
-                        }
-                    }]
-                };
-            }
-
-            // 3. Fallback: Se não achou arquivo de mídia no HTML, envia a própria URL HTTP
-            return {
-                streams: [{
-                    url: rawTarget,
-                    title: "IracemaFlix - Canal HTTP",
-                    behaviorHints: {
-                        requestHeaders: {
-                            "User-Agent": DEFAULT_HEADERS["User-Agent"],
-                            "Referer": BASE_URL
-                        }
-                    }
-                }]
-            };
-
-        } catch (err) {
-            console.error(`Erro no stream HTTP: ${err.message}`);
-            // Retorna o link original em caso de falha de parsing
-            return {
-                streams: [{
-                    url: rawTarget,
-                    title: "IracemaFlix - Link Direto",
-                    behaviorHints: {
-                        requestHeaders: {
-                            "User-Agent": DEFAULT_HEADERS["User-Agent"],
-                            "Referer": BASE_URL
-                        }
-                    }
-                }]
-            };
-        }
+            ]
+        };
     }
 
     return { streams: [] };
