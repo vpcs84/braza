@@ -4,14 +4,14 @@ const axios = require("axios");
 
 const app = express();
 
-// 1. Configuração de CORS
+// Configuração de CORS
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", "*");
     next();
 });
 
-// 2. Normaliza URLs vindas do roteador interno da Vercel
+// Normaliza a URL tratando prefixos do Vercel
 app.use((req, res, next) => {
     req.url = req.url.replace(/^\/api(\/index(\.js)?)?/i, "");
     if (!req.url || req.url === "" || req.url.toLowerCase() === "/index") {
@@ -34,7 +34,7 @@ const manifest = {
     id: "org.iracemaflix.scraper.addon",
     version: "1.0.0",
     name: "IracemaFlix Canais",
-    description: "Addon de TV ao vivo com raspagem direta dos canais do IracemaFlix.",
+    description: "Addon de TV ao vivo com suporte a canais e streams HTTP.",
     resources: ["catalog", "stream"],
     types: ["tv"],
     catalogs: [
@@ -88,7 +88,7 @@ async function fetchChannels() {
             const href = match[1];
             const rawContent = match[2];
 
-            if (href.includes("/canal") || href.includes("/play") || href.includes("/watch") || href.includes(".m3u8") || href.includes("id=")) {
+            if (href.includes("/canal") || href.includes("/play") || href.includes("/watch") || href.includes("id=") || href.startsWith("http")) {
                 let title = rawContent.replace(/<[^>]+>/g, "").trim();
                 const imgMatch = /src=["']([^"']+)["']/i.exec(rawContent);
                 let logo = imgMatch ? imgMatch[1] : null;
@@ -109,21 +109,6 @@ async function fetchChannels() {
                     type: "tv",
                     poster: logo || "https://via.placeholder.com/300x450?text=IracemaFlix+TV",
                     description: `Transmissão ao vivo do canal ${title}`
-                });
-            }
-        }
-
-        if (channels.length === 0) {
-            const m3u8Regex = /(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/gi;
-            let m3u8Match;
-            let idx = 1;
-            while ((m3u8Match = m3u8Regex.exec(html)) !== null) {
-                channels.push({
-                    id: `iracema:${encodeURIComponent(m3u8Match[1])}`,
-                    name: `Canal HLS ${idx++}`,
-                    type: "tv",
-                    poster: "https://via.placeholder.com/300x450?text=IracemaFlix+TV",
-                    description: "Sinal direto HLS."
                 });
             }
         }
@@ -153,11 +138,12 @@ builder.defineStreamHandler(async ({ type, id }) => {
     if (type === "tv" && id.startsWith("iracema:")) {
         const rawTarget = decodeURIComponent(id.replace("iracema:", ""));
 
-        if (rawTarget.endsWith(".m3u8") || rawTarget.includes(".m3u8") || rawTarget.endsWith(".mp4")) {
+        // 1. Se o destino já for um arquivo/stream direto em HTTP (.ts, .m3u8, .mp4 ou porta/live)
+        if (/\.(m3u8|ts|mp4|mkv)(\?.*)?$/i.test(rawTarget)) {
             return {
                 streams: [{
                     url: rawTarget,
-                    title: "Sinal Direto (HLS)",
+                    title: "Sinal HTTP Direto",
                     behaviorHints: {
                         requestHeaders: {
                             "User-Agent": DEFAULT_HEADERS["User-Agent"],
@@ -169,33 +155,46 @@ builder.defineStreamHandler(async ({ type, id }) => {
         }
 
         try {
+            // 2. Tenta raspar o player da página para capturar links de stream HTTP
             const response = await axios.get(rawTarget, {
                 headers: DEFAULT_HEADERS,
-                timeout: 8000
+                timeout: 8000,
+                maxRedirects: 5
             });
 
-            const pageHtml = response.data;
+            const pageHtml = typeof response.data === "string" ? response.data : JSON.stringify(response.data);
             let streamUrl = null;
 
-            const m3u8Match = /(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i.exec(pageHtml);
-            if (m3u8Match) {
-                streamUrl = m3u8Match[1];
+            // Busca arquivos de mídia no HTML
+            const mediaRegex = /(https?:\/\/[^\s"'<>]+\.(?:m3u8|ts|mp4|mkv)[^\s"'<>]*)/i;
+            // Busca variáveis em scripts de players (file: "http...", source: "http...", src: "http...")
+            const playerJsRegex = /(?:file|source|src|stream|link)\s*[:=]\s*["'](https?:\/\/[^"']+)["']/i;
+            // Busca tags <video> ou <source>
+            const videoTagRegex = /<(?:source|video)[^>]*src=["']([^"']+)["']/i;
+            // Busca iframes de players externos
+            const iframeRegex = /<iframe\s+[^>]*src=["']([^"']+)["']/i;
+
+            let match = mediaRegex.exec(pageHtml) || playerJsRegex.exec(pageHtml) || videoTagRegex.exec(pageHtml);
+
+            if (match) {
+                streamUrl = match[1];
             } else {
-                const iframeMatch = /<iframe\s+[^>]*src=["']([^"']+)["']/i.exec(pageHtml);
+                const iframeMatch = iframeRegex.exec(pageHtml);
                 if (iframeMatch) {
                     let iframeUrl = iframeMatch[1];
                     if (!iframeUrl.startsWith("http")) {
                         iframeUrl = new URL(iframeUrl, BASE_URL).href;
                     }
-                    
+
                     const iframeRes = await axios.get(iframeUrl, {
                         headers: { ...DEFAULT_HEADERS, Referer: rawTarget },
                         timeout: 8000
                     });
-                    const iframeHtml = iframeRes.data;
-                    const subM3u8 = /(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i.exec(iframeHtml);
-                    if (subM3u8) {
-                        streamUrl = subM3u8[1];
+                    const iframeHtml = typeof iframeRes.data === "string" ? iframeRes.data : JSON.stringify(iframeRes.data);
+                    
+                    const subMatch = mediaRegex.exec(iframeHtml) || playerJsRegex.exec(iframeHtml) || videoTagRegex.exec(iframeHtml);
+                    if (subMatch) {
+                        streamUrl = subMatch[1];
                     }
                 }
             }
@@ -204,7 +203,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
                 return {
                     streams: [{
                         url: streamUrl,
-                        title: "IracemaFlix - Stream Ao Vivo",
+                        title: "IracemaFlix - Stream HTTP",
                         behaviorHints: {
                             requestHeaders: {
                                 "User-Agent": DEFAULT_HEADERS["User-Agent"],
@@ -214,8 +213,36 @@ builder.defineStreamHandler(async ({ type, id }) => {
                     }]
                 };
             }
+
+            // 3. Fallback: Se não achou arquivo de mídia no HTML, envia a própria URL HTTP
+            return {
+                streams: [{
+                    url: rawTarget,
+                    title: "IracemaFlix - Canal HTTP",
+                    behaviorHints: {
+                        requestHeaders: {
+                            "User-Agent": DEFAULT_HEADERS["User-Agent"],
+                            "Referer": BASE_URL
+                        }
+                    }
+                }]
+            };
+
         } catch (err) {
-            console.error(`Erro no stream: ${err.message}`);
+            console.error(`Erro no stream HTTP: ${err.message}`);
+            // Retorna o link original em caso de falha de parsing
+            return {
+                streams: [{
+                    url: rawTarget,
+                    title: "IracemaFlix - Link Direto",
+                    behaviorHints: {
+                        requestHeaders: {
+                            "User-Agent": DEFAULT_HEADERS["User-Agent"],
+                            "Referer": BASE_URL
+                        }
+                    }
+                }]
+            };
         }
     }
 
@@ -225,7 +252,7 @@ builder.defineStreamHandler(async ({ type, id }) => {
 const addonInterface = builder.getInterface();
 const addonRouter = getRouter(addonInterface);
 
-// 3. Redireciona a raiz para o manifesto
+// Redireciona a raiz para o manifesto
 app.get("/", (req, res) => {
     res.redirect("/manifest.json");
 });
