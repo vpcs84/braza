@@ -1,19 +1,25 @@
+const express = require("express");
 const { addonBuilder, getRouter, serveHTTP } = require("stremio-addon-sdk");
 
 // 1. Configuração do Manifesto do Addon
 const manifest = {
   id: "org.iracemaflix.external.tv",
-  version: "1.2.0",
+  version: "1.3.0",
   name: "IracemaFlix TV",
-  description: "Assista aos canais da IracemaFlix abrindo diretamente no navegador externo.",
-  resources: ["catalog", "stream"],
-  types: ["tv"],
+  description: "Canais da IracemaFlix com reprodução em navegador externo.",
+  resources: ["catalog", "meta", "stream"],
+  types: ["movie", "tv"],
   idPrefixes: ["iracema_"],
   catalogs: [
     {
-      type: "tv",
-      id: "iracema_catalog",
+      type: "movie",
+      id: "iracema_catalog_movie",
       name: "IracemaFlix Ao Vivo"
+    },
+    {
+      type: "tv",
+      id: "iracema_catalog_tv",
+      name: "IracemaFlix (Canais)"
     }
   ],
   logo: "https://s2.glbimg.com/O4Q8iJ2R-8q9K9V0/globonews.jpg"
@@ -31,81 +37,90 @@ const CHANNELS = [
     description: "Canal GloboNews ao vivo transmitido via IracemaFlix.",
     externalUrl: "https://iracemaflix.eu.cc/tv?id=globonews&type=channel"
   }
-  /* Para adicionar mais canais, adicione novos objetos aqui:
-  ,{
-    id: "iracema_outrocanal",
-    name: "Outro Canal",
-    poster: "https://link-da-imagem.com/logo.jpg",
-    genres: ["Entretenimento"],
-    description: "Descrição do canal",
-    externalUrl: "https://iracemaflix.eu.cc/tv?id=SEU_ID&type=channel"
-  }
-  */
 ];
 
-// 3. Catálogo de Canais no Stremio
-builder.defineCatalogHandler(({ type, id }) => {
-  if (type === "tv" && id === "iracema_catalog") {
-    const metas = CHANNELS.map((channel) => ({
-      id: channel.id,
-      type: "tv",
-      name: channel.name,
-      poster: channel.poster,
-      genres: channel.genres,
-      description: channel.description
-    }));
+// Função auxiliar para gerar metadados válidos
+function getMeta(channel, type) {
+  const meta = {
+    id: channel.id,
+    type: type,
+    name: channel.name,
+    poster: channel.poster,
+    genres: channel.genres,
+    description: channel.description
+  };
 
-    return Promise.resolve({ metas });
+  // Se o tipo for 'tv', incluímos um 'episódio' para o Stremio habilitar a busca de streams
+  if (type === "tv") {
+    meta.videos = [
+      {
+        id: channel.id,
+        title: "Transmissão Ao Vivo",
+        released: new Date().toISOString()
+      }
+    ];
   }
 
+  return meta;
+}
+
+// 3. Handler do Catálogo
+builder.defineCatalogHandler(({ type, id }) => {
+  if (id.startsWith("iracema_catalog")) {
+    const metas = CHANNELS.map((channel) => getMeta(channel, type));
+    return Promise.resolve({ metas });
+  }
   return Promise.resolve({ metas: [] });
 });
 
-// 4. Handler de Stream (Navegador Externo)
-builder.defineStreamHandler(({ type, id }) => {
-  if (type === "tv") {
-    const channel = CHANNELS.find((item) => item.id === id);
+// 4. Handler de Metadados (Necessário para exibir a tela do canal e botões)
+builder.defineMetaHandler(({ type, id }) => {
+  const channel = CHANNELS.find((item) => item.id === id || id.startsWith(item.id));
+  if (channel) {
+    return Promise.resolve({ meta: getMeta(channel, type) });
+  }
+  return Promise.resolve({ meta: null });
+});
 
-    if (channel) {
-      return Promise.resolve({
-        streams: [
-          {
-            title: "🌐 Abrir no Navegador (IracemaFlix)",
-            externalUrl: channel.externalUrl
-          }
-        ]
-      });
-    }
+// 5. Handler de Stream (Gera o botão do link externo)
+builder.defineStreamHandler(({ type, id }) => {
+  const channel = CHANNELS.find((item) => item.id === id || id.startsWith(item.id));
+
+  if (channel) {
+    return Promise.resolve({
+      streams: [
+        {
+          title: "🌐 Abrir no Navegador (IracemaFlix)",
+          externalUrl: channel.externalUrl
+        }
+      ]
+    });
   }
 
   return Promise.resolve({ streams: [] });
 });
 
-// 5. Exportação compatível com Vercel (Serverless) e Local
+// 6. Integração Express + Serverless da Vercel
 const addonInterface = builder.getInterface();
+const app = express();
+
+// Middlewares para CORS
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+  next();
+});
+
+const router = getRouter(addonInterface);
+app.use("/", router);
 
 if (process.env.VERCEL || process.env.NODE_ENV === "production") {
-  const router = getRouter(addonInterface);
-
-  module.exports = (req, res) => {
-    // Cabeçalhos CORS para permitir acesso pelo Stremio Web
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-
-    if (req.method === "OPTIONS") {
-      res.statusCode = 200;
-      res.end();
-      return;
-    }
-
-    router(req, res, () => {
-      res.statusCode = 404;
-      res.end("Not Found");
-    });
-  };
+  module.exports = app;
 } else {
-  // Teste local via `node api/index.js`
   serveHTTP(addonInterface, { port: 7000 });
-  console.log("Addon rodando em http://127.0.0.1:7000/manifest.json");
+  console.log("Addon rodando localmente em http://127.0.0.1:7000/manifest.json");
 }
