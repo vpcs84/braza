@@ -6,29 +6,48 @@ const API_CHANNELS_URL = 'https://reidosembeds.online/api/channels';
 
 async function fetchChannels() {
     try {
+        console.log('A efetuar pedido à API:', API_CHANNELS_URL);
         const response = await axios.get(API_CHANNELS_URL, {
             timeout: 10000,
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/json'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Referer': 'https://reidosembeds.online/'
             }
         });
 
-        // Garante a leitura correta do array
+        console.log('Resposta da API (Status):', response.status);
+
         const data = Array.isArray(response.data)
             ? response.data
             : (response.data.channels || response.data.data || response.data.results || []);
 
+        console.log(`Total de canais obtidos: ${data.length}`);
         return data;
     } catch (error) {
-        console.error('Erro ao procurar canais na API:', error.message);
+        console.error('Erro no fetchChannels:', error.message);
+        if (error.response) {
+            console.error('Status HTTP do erro:', error.response.status);
+        }
         return [];
     }
 }
 
+// Extrai o URL caso a API retorne uma tag HTML <iframe> em vez de um link direto
+function cleanStreamUrl(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return null;
+    
+    const match = rawUrl.match(/src=["']([^"']+)["']/i);
+    if (match && match[1]) {
+        return match[1];
+    }
+    
+    return rawUrl.trim();
+}
+
 const manifest = {
     id: 'org.reidosembeds.tv',
-    version: '1.0.1',
+    version: '1.0.2',
     name: 'Rei dos Embeds - TV Ao Vivo',
     description: 'Canais de TV ao vivo integrados do Rei dos Embeds',
     types: ['tv'],
@@ -44,7 +63,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// 1. Catálogo de Canais
+// 1. Catálogo
 builder.defineCatalogHandler(async ({ type, id }) => {
     if (type === 'tv' && id === 'reidosembeds_tv_catalog') {
         const channels = await fetchChannels();
@@ -52,9 +71,9 @@ builder.defineCatalogHandler(async ({ type, id }) => {
         const metas = channels.map((item, index) => {
             const channelId = String(item.id || item.slug || item.code || index);
             return {
-                id: `rde_channel_${channelId}`,
+                id: `rde_${channelId}`,
                 type: 'tv',
-                name: item.name || item.title || item.nome || 'Canal sem nome',
+                name: item.name || item.title || item.nome || `Canal ${index + 1}`,
                 poster: item.logo || item.image || item.poster || item.icon || '',
                 posterShape: 'square',
                 description: item.category ? `Categoria: ${item.category}` : 'Canal ao vivo'
@@ -65,11 +84,11 @@ builder.defineCatalogHandler(async ({ type, id }) => {
     return { metas: [] };
 });
 
-// 2. Metadados do Canal
+// 2. Metadados
 builder.defineMetaHandler(async ({ type, id }) => {
-    if (type === 'tv' && id.startsWith('rde_channel_')) {
+    if (type === 'tv' && id.startsWith('rde_')) {
         const channels = await fetchChannels();
-        const cleanId = id.replace('rde_channel_', '');
+        const cleanId = id.replace('rde_', '');
 
         const channel = channels.find((c, index) => {
             const cId = String(c.id || c.slug || c.code || index);
@@ -92,11 +111,12 @@ builder.defineMetaHandler(async ({ type, id }) => {
     return { meta: null };
 });
 
-// 3. Obtenção do Link de Reprodução
+// 3. Resolução de Stream
 builder.defineStreamHandler(async ({ type, id }) => {
-    if (type === 'tv' && id.startsWith('rde_channel_')) {
+    console.log(`StreamHandler chamado para ID: ${id}`);
+    if (type === 'tv' && id.startsWith('rde_')) {
         const channels = await fetchChannels();
-        const cleanId = id.replace('rde_channel_', '');
+        const cleanId = id.replace('rde_', '');
 
         const channel = channels.find((c, index) => {
             const cId = String(c.id || c.slug || c.code || index);
@@ -104,28 +124,33 @@ builder.defineStreamHandler(async ({ type, id }) => {
         });
 
         if (channel) {
-            //Procura o link em qualquer propriedade comum de APIs de streaming
-            const streamUrl = channel.url || channel.stream_url || channel.embed || channel.link || channel.player || channel.iframe || channel.hls || channel.m3u8;
+            console.log('Dados do canal localizado:', JSON.stringify(channel));
 
-            if (streamUrl) {
+            const rawUrl = channel.url || channel.stream_url || channel.embed || channel.link || channel.player || channel.iframe || channel.hls || channel.m3u8;
+            const finalUrl = cleanStreamUrl(rawUrl);
+
+            if (finalUrl) {
+                console.log('URL final do stream:', finalUrl);
                 const streams = [];
 
-                // Tenta enviar o link direto para o player do Stremio
-                streams.push({
-                    title: channel.name ? `Assistir ${channel.name}` : 'Assistir ao Vivo',
-                    url: streamUrl
-                });
-
-                // Opção alternativa caso seja uma página web externa/embed
-                if (typeof streamUrl === 'string' && (streamUrl.includes('http://') || streamUrl.includes('https://'))) {
+                if (finalUrl.includes('.m3u8') || finalUrl.includes('.mp4')) {
                     streams.push({
-                        title: 'Abrir no Player Externo / Web',
-                        externalUrl: streamUrl
+                        title: `Assistir ${channel.name || 'Ao Vivo'} (Direct Stream)`,
+                        url: finalUrl
                     });
                 }
 
+                streams.push({
+                    title: `Abrir Player Externo / Web`,
+                    externalUrl: finalUrl
+                });
+
                 return { streams };
+            } else {
+                console.error('Nenhum campo de URL válido foi encontrado no canal.');
             }
+        } else {
+            console.error(`Canal com ID ${cleanId} não encontrado na resposta.`);
         }
     }
     return { streams: [] };
