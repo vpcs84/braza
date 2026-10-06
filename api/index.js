@@ -2,52 +2,33 @@ const express = require('express');
 const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 const axios = require('axios');
 
-const API_CHANNELS_URL = 'https://reidosembeds.online/api/channels';
+const API_BASE_URL = 'https://reidosembeds.online/api';
+const API_CHANNELS_URL = `${API_BASE_URL}/channels`;
 
-async function fetchChannels() {
+async function fetchFromApi(url) {
     try {
-        console.log('A efetuar pedido à API:', API_CHANNELS_URL);
-        const response = await axios.get(API_CHANNELS_URL, {
+        const response = await axios.get(url, {
             timeout: 10000,
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
                 'Accept': 'application/json, text/plain, */*',
                 'Referer': 'https://reidosembeds.online/'
             }
         });
-
-        console.log('Resposta da API (Status):', response.status);
-
-        const data = Array.isArray(response.data)
-            ? response.data
-            : (response.data.channels || response.data.data || response.data.results || []);
-
-        console.log(`Total de canais obtidos: ${data.length}`);
-        return data;
+        return { success: true, status: response.status, data: response.data };
     } catch (error) {
-        console.error('Erro no fetchChannels:', error.message);
-        if (error.response) {
-            console.error('Status HTTP do erro:', error.response.status);
-        }
-        return [];
+        return {
+            success: false,
+            error: error.message,
+            status: error.response ? error.response.status : null,
+            data: error.response ? error.response.data : null
+        };
     }
-}
-
-// Extrai o URL caso a API retorne uma tag HTML <iframe> em vez de um link direto
-function cleanStreamUrl(rawUrl) {
-    if (!rawUrl || typeof rawUrl !== 'string') return null;
-    
-    const match = rawUrl.match(/src=["']([^"']+)["']/i);
-    if (match && match[1]) {
-        return match[1];
-    }
-    
-    return rawUrl.trim();
 }
 
 const manifest = {
     id: 'org.reidosembeds.tv',
-    version: '1.0.2',
+    version: '1.0.3',
     name: 'Rei dos Embeds - TV Ao Vivo',
     description: 'Canais de TV ao vivo integrados do Rei dos Embeds',
     types: ['tv'],
@@ -66,8 +47,13 @@ const builder = new addonBuilder(manifest);
 // 1. Catálogo
 builder.defineCatalogHandler(async ({ type, id }) => {
     if (type === 'tv' && id === 'reidosembeds_tv_catalog') {
-        const channels = await fetchChannels();
-        
+        const res = await fetchFromApi(API_CHANNELS_URL);
+        if (!res.success || !res.data) return { metas: [] };
+
+        const channels = Array.isArray(res.data)
+            ? res.data
+            : (res.data.channels || res.data.data || res.data.results || []);
+
         const metas = channels.map((item, index) => {
             const channelId = String(item.id || item.slug || item.code || index);
             return {
@@ -87,13 +73,15 @@ builder.defineCatalogHandler(async ({ type, id }) => {
 // 2. Metadados
 builder.defineMetaHandler(async ({ type, id }) => {
     if (type === 'tv' && id.startsWith('rde_')) {
-        const channels = await fetchChannels();
-        const cleanId = id.replace('rde_', '');
+        const res = await fetchFromApi(API_CHANNELS_URL);
+        if (!res.success || !res.data) return { meta: null };
 
-        const channel = channels.find((c, index) => {
-            const cId = String(c.id || c.slug || c.code || index);
-            return cId === cleanId;
-        });
+        const channels = Array.isArray(res.data)
+            ? res.data
+            : (res.data.channels || res.data.data || res.data.results || []);
+
+        const cleanId = id.replace('rde_', '');
+        const channel = channels.find((c, index) => String(c.id || c.slug || c.code || index) === cleanId);
 
         if (channel) {
             return {
@@ -102,8 +90,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
                     type: 'tv',
                     name: channel.name || channel.title || channel.nome || 'Canal',
                     poster: channel.logo || channel.image || channel.poster || channel.icon || '',
-                    posterShape: 'square',
-                    description: channel.category ? `Categoria: ${channel.category}` : 'Transmissão ao vivo'
+                    posterShape: 'square'
                 }
             };
         }
@@ -111,52 +98,63 @@ builder.defineMetaHandler(async ({ type, id }) => {
     return { meta: null };
 });
 
-// 3. Resolução de Stream
+// 3. Streams
 builder.defineStreamHandler(async ({ type, id }) => {
-    console.log(`StreamHandler chamado para ID: ${id}`);
     if (type === 'tv' && id.startsWith('rde_')) {
-        const channels = await fetchChannels();
-        const cleanId = id.replace('rde_', '');
+        const res = await fetchFromApi(API_CHANNELS_URL);
+        if (!res.success || !res.data) return { streams: [] };
 
-        const channel = channels.find((c, index) => {
-            const cId = String(c.id || c.slug || c.code || index);
-            return cId === cleanId;
-        });
+        const channels = Array.isArray(res.data)
+            ? res.data
+            : (res.data.channels || res.data.data || res.data.results || []);
+
+        const cleanId = id.replace('rde_', '');
+        const channel = channels.find((c, index) => String(c.id || c.slug || c.code || index) === cleanId);
 
         if (channel) {
-            console.log('Dados do canal localizado:', JSON.stringify(channel));
+            // Se o canal necessitar de uma chamada adicional para obter a stream individual
+            let rawUrl = channel.url || channel.stream_url || channel.embed || channel.link || channel.player || channel.iframe || channel.hls || channel.m3u8;
 
-            const rawUrl = channel.url || channel.stream_url || channel.embed || channel.link || channel.player || channel.iframe || channel.hls || channel.m3u8;
-            const finalUrl = cleanStreamUrl(rawUrl);
-
-            if (finalUrl) {
-                console.log('URL final do stream:', finalUrl);
-                const streams = [];
-
-                if (finalUrl.includes('.m3u8') || finalUrl.includes('.mp4')) {
-                    streams.push({
-                        title: `Assistir ${channel.name || 'Ao Vivo'} (Direct Stream)`,
-                        url: finalUrl
-                    });
+            // Se a API exigir chamada no formato GET /api/channel/:id ou similar
+            if (!rawUrl && (channel.id || channel.slug)) {
+                const subRes = await fetchFromApi(`${API_BASE_URL}/channel/${channel.id || channel.slug}`);
+                if (subRes.success && subRes.data) {
+                    rawUrl = subRes.data.url || subRes.data.embed || subRes.data.link || subRes.data.stream;
                 }
-
-                streams.push({
-                    title: `Abrir Player Externo / Web`,
-                    externalUrl: finalUrl
-                });
-
-                return { streams };
-            } else {
-                console.error('Nenhum campo de URL válido foi encontrado no canal.');
             }
-        } else {
-            console.error(`Canal com ID ${cleanId} não encontrado na resposta.`);
+
+            if (rawUrl) {
+                return {
+                    streams: [
+                        {
+                            title: `Assistir ${channel.name || 'Ao Vivo'}`,
+                            url: rawUrl
+                        },
+                        {
+                            title: `Abrir no Navegador / Web`,
+                            externalUrl: rawUrl
+                        }
+                    ]
+                };
+            }
         }
     }
     return { streams: [] };
 });
 
 const app = express();
+
+// Rotas de Depuração Direta (Para abrir no browser)
+app.get('/test', async (req, res) => {
+    const apiBase = await fetchFromApi(API_BASE_URL);
+    res.json(apiBase);
+});
+
+app.get('/debug-channels', async (req, res) => {
+    const channels = await fetchFromApi(API_CHANNELS_URL);
+    res.json(channels);
+});
+
 const addonInterface = builder.getInterface();
 const sdkRouter = getRouter(addonInterface);
 
